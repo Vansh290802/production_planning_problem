@@ -4,88 +4,97 @@ import { useState } from 'react';
 import ProductionForm from './ProductionForm';
 import ProductionResults from './ProductionResults';
 import { Button } from './ui/button';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 
-interface ProductionParameters {
-  cleanTime: number;
-  periodLength: number;
-  changeCost: number;
-  waitCost: number;
-  emergencyCost: number;
-  stockOutCost: number;
-  specifications: Array<{
+interface ProductionFormData {
+  customers: string[];
+  machines: {
     name: string;
-    maxProduction: number;
-    priority: number;
-    loyalDemand: number;
-  }>;
-}
-
-interface Solution {
-  schedule: Array<{
-    specification: string;
-    machine: string;
-    period: number;
+    capacity: number;
+  }[];
+  specifications: string[];
+  demands: Array<{
+    customer: string;
+    spec: string;
     quantity: number;
   }>;
-  bufferTimes: Array<{
-    specification: string;
-    machine: string;
-    period: number;
-    time: number;
-  }>;
-  emergencyOrders: Array<{
-    specification: string;
-    machine: string;
-    period: number;
-  }>;
-  totalCost: number;
+  cleaning_time: number;
+  hours_per_day: number;
+  changeover_cost: number;
+  min_run_time: number;
+  shift_start_hour: number;
+  shift_end_hour: number;
 }
 
-const machines = ['Machine1', 'Machine2', 'Machine3'];
-const periodsPerDay = 12;
+interface APIResponse {
+  objective_value: number;
+  computation_time: number;
+  status: string;
+  schedule: Array<{
+    customer: string;
+    machine: string;
+    hour: number;
+    quantity: number;
+    spec: string;
+  }>;
+  changeovers: Array<{
+    machine: string;
+    hour: number;
+    from_spec: string;
+    to_spec: string;
+  }>;
+}
 
 export const LPSolver = () => {
-  const [solution, setSolution] = useState<Solution | null>(null);
+  const [solution, setSolution] = useState<APIResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const solveLP = async (params: ProductionParameters) => {
+  const solveLP = async (params: ProductionFormData) => {
     setIsLoading(true);
+    setError(null);
+
     try {
-      // For demonstration purposes, creating a simulated solution
-      // In production, this would be replaced with actual LP solving logic
-      const simulatedSolution: Solution = {
-        schedule: params.specifications.flatMap((spec) => 
-          machines.flatMap((machine) => 
-            Array.from({ length: 3 }, (_, i) => ({
-              specification: spec.name,
-              machine: machine,
-              period: i,
-              quantity: Math.floor(Math.random() * spec.maxProduction)
-            }))
-          )
-        ),
-        bufferTimes: machines.flatMap((machine) => 
-          Array.from({ length: 2 }, (_, i) => ({
-            specification: params.specifications[0]?.name || "Default",
-            machine: machine,
-            period: i,
-            time: Math.random() * params.periodLength * 0.2
-          }))
-        ),
-        emergencyOrders: machines.map((machine) => ({
-          specification: params.specifications[0]?.name || "Default",
-          machine: machine,
-          period: 0
-        })),
-        totalCost: Math.random() * 10000
+      // Convert machines array to machine_capacity_per_hour object
+      const machine_capacity_per_hour = params.machines.reduce((acc, machine) => {
+        acc[machine.name] = machine.capacity;
+        return acc;
+      }, {} as Record<string, number>);
+
+      // Prepare API request data
+      const apiData = {
+        customers: params.customers,
+        machines: Object.keys(machine_capacity_per_hour),
+        specifications: params.specifications,
+        demands: params.demands,
+        machine_capacity_per_hour,
+        cleaning_time: params.cleaning_time,
+        hours_per_day: params.hours_per_day,
+        changeover_cost: params.changeover_cost,
+        min_run_time: params.min_run_time,
+        shift_start_hour: params.shift_start_hour,
+        shift_end_hour: params.shift_end_hour
       };
 
-      // Simulated delay to represent calculation time
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      setSolution(simulatedSolution);
-    } catch (error) {
-      console.error('Error solving LP:', error);
+      // Make API call to localhost:8000
+      const response = await fetch('http://localhost:8000/api/v1/schedule', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(apiData),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to get optimization results');
+      }
+
+      const result: APIResponse = await response.json();
+      setSolution(result);
+    } catch (err) {
+      console.error('Error solving LP:', err);
+      setError(err instanceof Error ? err.message : 'An unexpected error occurred');
     } finally {
       setIsLoading(false);
     }
@@ -93,10 +102,17 @@ export const LPSolver = () => {
 
   const handleReset = () => {
     setSolution(null);
+    setError(null);
   };
 
   return (
     <div className="space-y-8">
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
       {!solution ? (
         <ProductionForm onSubmit={solveLP} />
       ) : (
@@ -106,7 +122,12 @@ export const LPSolver = () => {
               Start New Optimization
             </Button>
           </div>
-          <ProductionResults {...solution} />
+          <ProductionResults 
+            schedule={solution.schedule}
+            changeovers={solution.changeovers}
+            objective_value={solution.objective_value}
+            status={solution.status}
+          />
         </div>
       )}
       
